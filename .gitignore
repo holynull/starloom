@@ -1,0 +1,13 @@
+.venv
+.env
+env
+.ipynb_checkpoints/
+swft_faq.txt
+__pycache__
+redis_data.csv
+data_demo.csv
+dataset.csv
+dataset_snapshot.csv
+data_sample/
+logioptionsplus_installer.app
+logioptionsplus_installer.zip
