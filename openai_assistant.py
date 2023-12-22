@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Un
 from langchain.pydantic_v1 import Field
 from langchain.schema.agent import AgentAction, AgentFinish
 from langchain.schema.runnable import RunnableConfig, RunnableSerializable
-from langchain.tools import format_tool_to_openai_function
+from langchain.tools.render import format_tool_to_openai_function
 from langchain.tools.base import BaseTool
 
 if TYPE_CHECKING:
@@ -65,13 +65,13 @@ class OpenAIAssistantRunnable(RunnableSerializable[Dict, OutputType]):
 
             from langchain_experimental.openai_assistant import OpenAIAssistantRunnable
 
-            interpreter_assistant = OpenAIAssistantRunnable.create_assistant(
+            assistant = OpenAIAssistantRunnable.create_assistant(
                 name="langchain assistant",
                 instructions="You are a personal math tutor. Write and run code to answer math questions.",
                 tools=[{"type": "code_interpreter"}],
                 model="gpt-4-1106-preview"
             )
-            output = interpreter_assistant.invoke({"content": "What's 10 - 4 raised to the 2.7"})
+            output = assistant.invoke({"content": "What's 10 - 4 raised to the 2.7"})
 
     Example using custom tools and AgentExecutor:
         .. code-block:: python
@@ -182,39 +182,70 @@ class OpenAIAssistantRunnable(RunnableSerializable[Dict, OutputType]):
             tools=openai_tools,
             model=model,
         )
+        print(f"{name} id is:{assistant.id}")
         return cls(assistant_id=assistant.id, **kwargs)
 
     @classmethod
     def create_assistant_from_id(
         cls,
         assistant_id: str,
+        name: Optional[str],
+        instructions: Optional[str],
+        tools: Optional[Sequence[Union[BaseTool, dict]]],
+        model: Optional[str],
         *,
         client: Optional[openai.OpenAI] = None,
         **kwargs: Any,
     ) -> OpenAIAssistantRunnable:
         client = client or _get_openai_client()
         assistant = client.beta.assistants.retrieve(assistant_id=assistant_id)
-        if assistant:
+        if assistant or assistant_id is not None:
+            print(f"{name} id is:{assistant.id}")
             return cls(assistant_id=assistant.id, **kwargs)
         else:
-            raise Exception(f"There is no assistant with id:{assistant_id}")
+            openai_tools: List = []
+            for tool in tools:
+                if isinstance(tool, BaseTool):
+                    tool = {
+                        "type": "function",
+                        "function": format_tool_to_openai_function(tool),
+                    }
+                openai_tools.append(tool)
+            assistant = client.beta.assistants.create(
+                name=name,
+                instructions=instructions,
+                tools=openai_tools,
+                model=model,
+            )
+            print(f"{name} id is:{assistant.id}")
+            return cls(assistant_id=assistant.id, **kwargs)
 
     def update(
         self,
-        instructions: Optional[str],
-        name: Optional[str],
-        tools: Optional[Sequence[Union[BaseTool, dict]]],
-        model: Optional[str],
-        file_ids: Optional[List[str]],
+        instructions: Optional[str] = None,
+        name: Optional[str] = None,
+        tools: Optional[Sequence[Union[BaseTool, dict]]] = None,
+        model: Optional[str] = None,
+        file_ids: Optional[List[str]] = None,
     ):
         assistant = self.client.beta.assistants.retrieve(assistant_id=self.assistant_id)
+        openai_tools: List = []
+        for tool in tools:
+            if isinstance(tool, BaseTool):
+                tool = {
+                    "type": "function",
+                    "function": format_tool_to_openai_function(tool),
+                }
+            openai_tools.append(tool)
         self.client.beta.assistants.update(
             assistant_id=self.assistant_id,
-            instructions=instructions if instructions else assistant.instructions,
-            name=name if name else assistant.name,
-            tools=tools if tools else assistant.tools,
-            model=model if model else assistant.model,
-            file_ids=file_ids if file_ids else assistant.file_ids,
+            instructions=instructions
+            if instructions is not None
+            else assistant.instructions,
+            name=name if name is not None else assistant.name,
+            tools=openai_tools if len(openai_tools) > 0 else assistant.tools,
+            model=model if model is not None else assistant.model,
+            file_ids=file_ids if file_ids is not None else assistant.file_ids,
         )
 
     def invoke(
@@ -333,16 +364,16 @@ class OpenAIAssistantRunnable(RunnableSerializable[Dict, OutputType]):
             new_messages = [msg for msg in messages if msg.run_id == run_id]
             if not self.as_agent:
                 return new_messages
-            answer: Any = [
-                msg_content for msg in new_messages for msg_content in msg.content
-            ]
-            if all(
-                isinstance(content, openai.types.beta.threads.MessageContentText)
-                for content in answer
-            ):
-                answer = "\n".join(content.text.value for content in answer)
+            # answer: Any = [
+            #     msg_content for msg in new_messages for msg_content in msg.content
+            # ]
+            # if all(
+            #     isinstance(content, openai.types.beta.threads.MessageContentText)
+            #     for content in answer
+            # ):
+            #     answer = "\n".join(content.text.value for content in answer)
             return OpenAIAssistantFinish(
-                return_values={"output": answer},
+                return_values={"output": new_messages},
                 log="",
                 run_id=run_id,
                 thread_id=thread_id,
@@ -381,3 +412,25 @@ class OpenAIAssistantRunnable(RunnableSerializable[Dict, OutputType]):
             if in_progress:
                 sleep(self.check_every_ms / 1000)
         return run
+
+def execute_agent(agent: OpenAIAssistantRunnable, input, tools: list = []):
+    tool_map = {tool.name: tool for tool in tools if isinstance(tool, BaseTool)}
+    response = agent.invoke(input)
+    while not isinstance(response, OpenAIAssistantFinish):
+        tool_outputs = []
+        for action in response:
+            print(f"System: {action.tool} invoking.")
+            print(f"System: Input is {action.tool_input}")
+            tool_output = tool_map[action.tool].invoke(action.tool_input)
+            # print(f"System: {action.tool} output {tool_output}")
+            tool_outputs.append(
+                {"output": tool_output, "tool_call_id": action.tool_call_id}
+            )
+        response = agent.invoke(
+            {
+                "tool_outputs": tool_outputs,
+                "run_id": action.run_id,
+                "thread_id": action.thread_id,
+            }
+        )
+    return response
