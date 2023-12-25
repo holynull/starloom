@@ -1,4 +1,3 @@
-"""Util that calls Google Search using the Serper.dev API."""
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -8,6 +7,7 @@ from langchain_core.pydantic_v1 import BaseModel, root_validator
 from typing_extensions import Literal
 
 from langchain.utils import get_from_dict_or_env
+from tradingview_ta import TA_Handler, Interval, Exchange
 
 
 class GoogleSerperAPIWrapper(BaseModel):
@@ -384,7 +384,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 from langchain_core.language_models import BaseLanguageModel
-from langchain_core.prompts import BasePromptTemplate
+from langchain_core.prompts import BasePromptTemplate,PromptTemplate
 from langchain_core.pydantic_v1 import Field, root_validator
 
 from langchain.callbacks.manager import (
@@ -620,3 +620,212 @@ def getHTMLFromURL(url: str) -> str:
     response = requests.get(url)
     soup = BeautifulSoup(response.text, "html.parser")
     return soup.prettify()
+
+
+class TradingViewReasearchReportChain(Chain):
+    """
+    An example of a custom chain.
+    """
+
+    prompt: BasePromptTemplate
+    """Prompt object to use."""
+    llm: BaseLanguageModel
+    output_key: str = "text"  #: :meta private:
+
+    class Config:
+        """Configuration for this pydantic object."""
+
+        extra = Extra.forbid
+        arbitrary_types_allowed = True
+
+    @property
+    def input_keys(self) -> List[str]:
+        """Will be whatever keys the prompt expects.
+
+        :meta private:
+        """
+        return self.prompt.input_variables
+
+    @property
+    def output_keys(self) -> List[str]:
+        """Will always return text key.
+
+        :meta private:
+        """
+        return [self.output_key]
+
+    def _call(
+        self,
+        inputs: Dict[str, Any],
+        run_manager: Optional[CallbackManagerForChainRun] = None,
+    ) -> Dict[str, str]:
+        # Your custom chain logic goes here
+        # This is just an example that mimics LLMChain
+        prompt_value = self.prompt.format_prompt(**inputs)
+        if run_manager:
+            run_manager.on_text(
+                prompt_value.to_string(),
+                color="green",
+                end="\n",
+                verbose=self.verbose,
+            )
+        # Whenever you call a language model, or another chain, you should pass
+        # a callback manager to it. This allows the inner run to be tracked by
+        # any callbacks that are registered on the outer run.
+        # You can always obtain a callback manager for this by calling
+        # `run_manager.get_child()` as shown below.
+        response = self.llm.generate_prompt(
+            [prompt_value], callbacks=run_manager.get_child() if run_manager else None
+        )
+
+        # If you want to log something about this run, you can do so by calling
+        # methods on the `run_manager`, as shown below. This will trigger any
+        # callbacks that are registered for that event.
+        # answer=self.answer_chain.run(question=inputs['user_input'],context=res)
+        if run_manager:
+            run_manager.on_text(
+                response.generations[0][0].text,
+                color="yellow",
+                end="\n",
+                verbose=self.verbose,
+            )
+        return {self.output_key: response.generations[0][0].text}
+
+    async def _acall(
+        self,
+        inputs: Dict[str, Any],
+        run_manager: Optional[AsyncCallbackManagerForChainRun] = None,
+    ) -> Dict[str, str]:
+        # Your custom chain logic goes here
+        # This is just an example that mimics LLMChain
+        prompt_value = self.prompt.format_prompt(**inputs)
+        if run_manager:
+            await run_manager.on_text(
+                prompt_value.to_string(),
+                color="green",
+                end="\n",
+                verbose=self.verbose,
+            )
+        # Whenever you call a language model, or another chain, you should pass
+        # a callback manager to it. This allows the inner run to be tracked by
+        # any callbacks that are registered on the outer run.
+        # You can always obtain a callback manager for this by calling
+        # `run_manager.get_child()` as shown below.
+        response = await self.llm.agenerate_prompt(
+            [prompt_value], callbacks=run_manager.get_child() if run_manager else None
+        )
+
+        # If you want to log something about this run, you can do so by calling
+        # methods on the `run_manager`, as shown below. This will trigger any
+        # callbacks that are registered for that event.
+        if run_manager:
+            await run_manager.on_text(
+                response.generations[0][0].text,
+                color="yellow",
+                end="\n",
+                verbose=self.verbose,
+            )
+        return {self.output_key: response.generations[0][0].text}
+
+    @property
+    def _chain_type(self) -> str:
+        return "indicators_questions_chain"
+
+    @classmethod
+    def from_llm(
+        cls,
+        llm,
+        **kwargs: Any,
+    ) -> Chain:
+        PROMPT_TEMPLATE = """We have an unofficial python API wrapper to retrieve technical analysis from TradingView.
+Retrieving the analysis:
+- summary: Technical analysis (based on both oscillators and moving averages).
+```
+# Example
+{{'RECOMMENDATION': 'BUY', 'BUY': 12, 'SELL': 7, 'NEUTRAL': 9}}
+```
+- oscillators: Technical analysis (based on oscillators).
+```
+# Example
+{{'RECOMMENDATION': 'BUY', 'BUY': 2, 'SELL': 1, 'NEUTRAL': 8, 'COMPUTE': {{'RSI': 'NEUTRAL', 'STOCH.K': 'NEUTRAL', 'CCI': 'NEUTRAL', 'ADX': 'NEUTRAL', 'AO': 'NEUTRAL', 'Mom': 'BUY', 'MACD': 'SELL', 'Stoch.RSI': 'NEUTRAL', 'W%R': 'NEUTRAL', 'BBP': 'BUY', 'UO': 'NEUTRAL'}}}}
+```
+- moving_averages: Technical analysis (based on moving averages).
+```
+# Example
+{{'RECOMMENDATION': 'BUY', 'BUY': 9, 'SELL': 5, 'NEUTRAL': 1, 'COMPUTE': {{'EMA10': 'SELL', 'SMA10': 'SELL', 'EMA20': 'SELL', 'SMA20': 'SELL', 'EMA30': 'BUY', 'SMA30': 'BUY', 'EMA50': 'BUY', 'SMA50': 'BUY', 'EMA100': 'BUY', 'SMA100': 'BUY', 'EMA200': 'BUY', 'SMA200': 'BUY', 'Ichimoku': 'NEUTRAL', 'VWMA': 'SELL', 'HullMA': 'BUY'}}}}
+```
+- indicators: Technical indicators.
+```
+# Example
+{{'Recommend.Other': 0, 'Recommend.All': 0.26666667, 'Recommend.MA': 0.53333333, 'RSI': 60.28037412, 'RSI[1]': 58.58364778, 'Stoch.K': 73.80404453, 'Stoch.D': 79.64297643, 'Stoch.K[1]': 78.88160227, 'Stoch.D[1]': 85.97647064, 'CCI20': 46.58442886, 'CCI20[1]': 34.57058796, 'ADX': 35.78754863, 'ADX+DI': 23.16948389, 'ADX-DI': 13.82449817, 'ADX+DI[1]': 24.15991909, 'ADX-DI[1]': 13.87125505, 'AO': 6675.72158824, 'AO[1]': 7283.92420588, 'Mom': 1532.6, 'Mom[1]': 108.29, 'MACD.macd': 2444.73734978, 'MACD.signal': 2606.00138275, 'Rec.Stoch.RSI': 0, 'Stoch.RSI.K': 18.53740187, 'Rec.WR': 0, 'W.R': -26.05634845, 'Rec.BBPower': 0, 'BBPower': 295.52055898, 'Rec.UO': 0, 'UO': 55.68311917, 'close': 45326.97, 'EMA5': 45600.06414333, 'SMA5': 45995.592, 'EMA10': 45223.22433151, 'SMA10': 45952.635, 'EMA20': 43451.52018338, 'SMA20': 43609.214, 'EMA30': 41908.5944052, 'SMA30': 40880.391, 'EMA50': 40352.10222373, 'SMA50': 37819.3566, 'EMA100': 40356.09177879, 'SMA100': 38009.7808, 'EMA200': 39466.50411569, 'SMA200': 45551.36135, 'Rec.Ichimoku': 0, 'Ichimoku.BLine': 40772.57, 'Rec.VWMA': 1, 'VWMA': 43471.81729377, 'Rec.HullMA9': -1, 'HullMA9': 45470.37107407, 'Pivot.M.Classic.S3': 11389.27666667, 'Pivot.M.Classic.S2': 24559.27666667, 'Pivot.M.Classic.S1': 33010.55333333, 'Pivot.M.Classic.Middle': 37729.27666667, 'Pivot.M.Classic.R1': 46180.55333333, 'Pivot.M.Classic.R2': 50899.27666667, 'Pivot.M.Classic.R3': 64069.27666667, 'Pivot.M.Fibonacci.S3': 24559.27666667, 'Pivot.M.Fibonacci.S2': 29590.21666667, 'Pivot.M.Fibonacci.S1': 32698.33666667, 'Pivot.M.Fibonacci.Middle': 37729.27666667, 'Pivot.M.Fibonacci.R1': 42760.21666667, 'Pivot.M.Fibonacci.R2': 45868.33666667, 'Pivot.M.Fibonacci.R3': 50899.27666667, 'Pivot.M.Camarilla.S3': 37840.08, 'Pivot.M.Camarilla.S2': 39047.33, 'Pivot.M.Camarilla.S1': 40254.58, 'Pivot.M.Camarilla.Middle': 37729.27666667, 'Pivot.M.Camarilla.R1': 42669.08, 'Pivot.M.Camarilla.R2': 43876.33, 'Pivot.M.Camarilla.R3': 45083.58, 'Pivot.M.Woodie.S3': 21706.84, 'Pivot.M.Woodie.S2': 25492.42, 'Pivot.M.Woodie.S1': 34876.84, 'Pivot.M.Woodie.Middle': 38662.42, 'Pivot.M.Woodie.R1': 48046.84, 'Pivot.M.Woodie.R2': 51832.42, 'Pivot.M.Woodie.R3': 61216.84, 'Pivot.M.Demark.S1': 35369.915, 'Pivot.M.Demark.Middle': 38908.9575, 'Pivot.M.Demark.R1': 48539.915, 'open': 44695.95, 'P.SAR': 48068.64, 'BB.lower': 37961.23510877, 'BB.upper': 49257.19289123, 'AO[2]': 7524.31223529, 'volume': 32744.424503, 'change': 1.44612354, 'low': 44203.28, 'high': 45560}}
+```
+
+We got the analysis data of {symbol} from python-tradingview-ta as following:
+summary:{summary}
+oscillators:{oscillators}
+moving_averages:{moving_averages}
+indicators:{indicators}
+"""
+        PROMPT_TEMPLATE = (
+            PROMPT_TEMPLATE
+            + """\nPlease generate the analysis results by analyzing data the above, and provide the market trend. If the strength of the signal is represented by a score from 1 to 10, where a higher score indicates a stronger signal, please give a score to the strength of the signal in the end.
+Your generation:
+"""
+        )
+
+        prompt = PromptTemplate.from_template(PROMPT_TEMPLATE)
+        return cls(llm=llm, prompt=prompt, **kwargs)
+
+
+
+class TradingviewWrapper:
+    llm: BaseLanguageModel
+
+    def __init__(cls, llm):
+        cls.llm = llm
+
+    def buySellSignal(cls, symbol: str, **kwargs: any) -> str:
+        btc_usdt = TA_Handler(
+            symbol=f"{symbol}USDT",
+            screener="crypto",
+            exchange="GATEIO",
+            interval=Interval.INTERVAL_1_DAY,
+        )
+        summary = btc_usdt.get_analysis().summary
+        oscillators = btc_usdt.get_analysis().oscillators
+        moving_averages = btc_usdt.get_analysis().moving_averages
+        indicators = btc_usdt.get_analysis().indicators
+        # return "\n".join([f"Summary:{summary}",f"Oscillators:{oscillators}",f"Moving Averages:{moving_averages}",f"Indicators:{indicators}"])
+        tradingview_chain = TradingViewReasearchReportChain.from_llm(
+            llm=cls.llm, verbose=True
+        )
+        return tradingview_chain.run(
+            symbol=f"{symbol}/usdt",
+            summary=summary,
+            oscillators=oscillators,
+            moving_averages=moving_averages,
+            indicators=indicators,
+        )
+
+    async def abuySellSignal(cls, symbol: str, **kwargs: any) -> str:
+        btc_usdt = TA_Handler(
+            symbol=f"{symbol}USDT",
+            screener="crypto",
+            exchange="GATEIO",
+            interval=Interval.INTERVAL_1_DAY,
+        )
+        summary = btc_usdt.get_analysis().summary
+        oscillators = btc_usdt.get_analysis().oscillators
+        moving_averages = btc_usdt.get_analysis().moving_averages
+        indicators = btc_usdt.get_analysis().indicators
+        # return "\n".join([f"Summary:{summary}",f"Oscillators:{oscillators}",f"Moving Averages:{moving_averages}",f"Indicators:{indicators}"])
+        tradingview_chain = TradingViewReasearchReportChain.from_llm(
+            llm=cls.llm, verbose=True
+        )
+        return await tradingview_chain.arun(
+            symbol=f"{symbol}/usdt",
+            summary=summary,
+            oscillators=oscillators,
+            moving_averages=moving_averages,
+            indicators=indicators,
+        )

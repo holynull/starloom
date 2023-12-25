@@ -413,6 +413,7 @@ class OpenAIAssistantRunnable(RunnableSerializable[Dict, OutputType]):
                 sleep(self.check_every_ms / 1000)
         return run
 
+
 def execute_agent(agent: OpenAIAssistantRunnable, input, tools: list = []):
     tool_map = {tool.name: tool for tool in tools if isinstance(tool, BaseTool)}
     response = agent.invoke(input)
@@ -421,11 +422,14 @@ def execute_agent(agent: OpenAIAssistantRunnable, input, tools: list = []):
         for action in response:
             print(f"System: {action.tool} invoking.")
             print(f"System: Input is {action.tool_input}")
-            tool_output = tool_map[action.tool].invoke(action.tool_input)
-            # print(f"System: {action.tool} output {tool_output}")
-            tool_outputs.append(
-                {"output": tool_output, "tool_call_id": action.tool_call_id}
-            )
+            try:
+                tool_output = tool_map[action.tool].invoke(action.tool_input)
+                # print(f"System: {action.tool} output {tool_output}")
+                tool_outputs.append(
+                    {"output": tool_output, "tool_call_id": action.tool_call_id}
+                )
+            except Exception as e:
+                tool_outputs.append({"output": e, "tool_call_id": action.tool_call_id})
         response = agent.invoke(
             {
                 "tool_outputs": tool_outputs,
